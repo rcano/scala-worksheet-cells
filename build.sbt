@@ -27,4 +27,7 @@ libraryDependencies ++= Seq(
   // special byte manipulation library that lets us open up all modules, necessary for kryo and GWMS
   "org.burningwave" % "core" % "12.65.2",
   "com.twitter" %% "chill" % "0.10.0" cross CrossVersion.for3Use2_13,
+  "org.scalameta" %% "munit" % "0.7.29" % Test
 )
+
+testFrameworks += new TestFramework("munit.Framework")

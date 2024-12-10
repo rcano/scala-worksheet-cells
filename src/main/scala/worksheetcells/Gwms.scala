@@ -7,6 +7,7 @@ import com.twitter.chill.ScalaKryoInstantiator
 import java.time.Instant
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
+import java.io.OutputStream
 
 /** Global worksheet mutable state.
   *
@@ -26,8 +27,10 @@ object Gwms {
 
     extension (key: String) def clean = key.replace("/", "╱")
 
+    def fileForKey(key: String): File = dir / key.clean
+
     def store(key: String, value: Any, deadline: Option[Instant]): Unit = {
-      val f = dir / key.clean
+      val f = fileForKey(key)
       if (f.exists) f.clear() else f.createFile()
       for {
         fout <- f.outputStream
@@ -40,7 +43,7 @@ object Gwms {
     }
 
     def load(key: String): Option[Any] = {
-      val f = dir / key.clean
+      val f = fileForKey(key)
       val entry = cacheMap.get(key).orElse {
         Option.when(f.exists) {
           (for {
@@ -55,8 +58,8 @@ object Gwms {
       val res = entry.filterNot { (deadlineOpt, value) =>
         val expired = deadlineOpt.exists(_ `isBefore` Instant.now())
         if (expired) {
-            f.delete(swallowIOExceptions = true) // if expired, remove
-            None
+          f.delete(swallowIOExceptions = true) // if expired, remove
+          None
         } else {
           cacheMap(key) = (deadlineOpt, value) //ensure value is cached
         }
@@ -65,8 +68,22 @@ object Gwms {
       res.map(_._2)
     }
 
+    def sha1(key: String): Option[String] = {
+      val f = fileForKey(key)
+      Option.when(f.exists) {
+        (for {
+          fis <- f.inputStream
+        } yield {
+          fis.skipNBytes(8)
+          val digestStream = fis.sha1
+          digestStream.transferTo(OutputStream.nullOutputStream())
+          Aux.toHex(digestStream.getMessageDigest().digest())
+        }).get()
+      }
+    }
+
     def remove(key: String): Unit = {
-      (dir / key.clean).delete(swallowIOExceptions = true)
+      fileForKey(key).delete(swallowIOExceptions = true)
       cacheMap.remove(key)
     }
     def readKeys(): Set[String] = dir.list.map(_.name.replace("╱", "/")).toSet
@@ -104,10 +121,11 @@ object Gwms {
   /** Returns the currently associated value, without any clean up */
   def get(key: String): Option[Any] = store.load(key)
 
+  def getSha1(key: String): Option[String] = store.sha1(key)
+
   def release(key: String): Unit = store.remove(key)
 
   def clear(): Unit = store.clear()
 
   def keys(): collection.Set[String] = store.readKeys()
 }
-
