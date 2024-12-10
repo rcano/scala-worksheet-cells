@@ -2,12 +2,11 @@ package worksheetcells
 
 import better.files.*
 import com.esotericsoftware.kryo.io.{Input as KyroInput, Output as KryoOutput}
-import com.github.benmanes.caffeine.cache.Caffeine
 import com.twitter.chill.ScalaKryoInstantiator
+import java.io.OutputStream
 import java.time.Instant
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
-import java.io.OutputStream
 
 /** Global worksheet mutable state.
   *
@@ -21,9 +20,6 @@ object Gwms {
 
     val dir = File(".gwms").createDirectoryIfNotExists()
     val kryo = ScalaKryoInstantiator().setRegistrationRequired(false).newKryo()
-
-    val cache = Caffeine.newBuilder().expireAfterAccess(10, MINUTES).build[String, (Option[Instant], Any)]()
-    val cacheMap = cache.asMap.asScala
 
     extension (key: String) def clean = key.replace("/", "╱")
 
@@ -39,29 +35,24 @@ object Gwms {
         output.writeLong(deadline.map(_.toEpochMilli).getOrElse(Long.MaxValue))
         kryo.writeClassAndObject(output, value)
       }
-      cacheMap(key) = deadline -> value
     }
 
     def load(key: String): Option[Any] = {
       val f = fileForKey(key)
-      val entry = cacheMap.get(key).orElse {
-        Option.when(f.exists) {
-          (for {
-            fis <- f.inputStream
-            input <- KyroInput(fis).autoClosed
-          } yield {
-            val deadline = Option(input.readLong()).filter(_ != Long.MaxValue).map(Instant.ofEpochMilli)
-            deadline -> kryo.readClassAndObject(input)
-          }).get()
-        }
+      val entry = Option.when(f.exists) {
+        (for {
+          fis <- f.inputStream
+          input <- KyroInput(fis).autoClosed
+        } yield {
+          val deadline = Option(input.readLong()).filter(_ != Long.MaxValue).map(Instant.ofEpochMilli)
+          deadline -> kryo.readClassAndObject(input)
+        }).get()
       }
       val res = entry.filterNot { (deadlineOpt, value) =>
         val expired = deadlineOpt.exists(_ `isBefore` Instant.now())
         if (expired) {
           f.delete(swallowIOExceptions = true) // if expired, remove
           None
-        } else {
-          cacheMap(key) = (deadlineOpt, value) //ensure value is cached
         }
         expired
       }
@@ -84,7 +75,6 @@ object Gwms {
 
     def remove(key: String): Unit = {
       fileForKey(key).delete(swallowIOExceptions = true)
-      cacheMap.remove(key)
     }
     def readKeys(): Set[String] = dir.list.map(_.name.replace("╱", "/")).toSet
 
@@ -93,11 +83,9 @@ object Gwms {
       dir.list
         .filter(_.inputStream.apply(fis => Instant.ofEpochMilli(fis.asObjectInputStream().readLong).isBefore(now)))
         .foreach(_.delete(swallowIOExceptions = true))
-      cacheMap.filterInPlace { case (_, (deadlineOpt, _)) => !deadlineOpt.exists(_.isBefore(now)) }
     }
     def clear(): Unit = {
       dir.list.foreach(_.delete(swallowIOExceptions = true))
-      cacheMap.clear()
     }
   }
 
